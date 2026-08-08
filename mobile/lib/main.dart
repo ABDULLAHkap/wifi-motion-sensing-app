@@ -4,6 +4,7 @@ import 'dart:math';
 import 'package:flutter/material.dart';
 
 import 'models/wifi_sample.dart';
+import 'services/dataset_recorder.dart';
 import 'services/wifi_service.dart';
 
 void main() => runApp(const WifiMotionApp());
@@ -34,7 +35,15 @@ class MotionDashboard extends StatefulWidget {
 }
 
 class _MotionDashboardState extends State<MotionDashboard> {
+  static const labels = <String>[
+    'EMPTY',
+    'PERSON_STILL',
+    'PERSON_WALKING',
+    'OBJECT_MOVING',
+  ];
+
   final WifiService _wifiService = WifiService();
+  final DatasetRecorder _recorder = DatasetRecorder();
   final List<int> _history = <int>[];
 
   StreamSubscription<WifiSample>? _subscription;
@@ -42,6 +51,10 @@ class _MotionDashboardState extends State<MotionDashboard> {
   double? _baseline;
   double _motionScore = 0;
   String? _error;
+  String _selectedLabel = labels.first;
+  bool _isRecording = false;
+  int _recordedSamples = 0;
+  String? _lastSavedPath;
 
   @override
   void initState() {
@@ -51,19 +64,28 @@ class _MotionDashboardState extends State<MotionDashboard> {
 
   void _startSensing() {
     _subscription = _wifiService.samples().listen(
-      (sample) {
+      (sample) async {
+        if (_isRecording) {
+          await _recorder.append(sample);
+        }
+
+        if (!mounted) return;
         setState(() {
           _latest = sample;
           _error = null;
           _history.add(sample.rssi);
-          if (_history.length > 30) _history.removeAt(0);
+          if (_history.length > 60) _history.removeAt(0);
           if (_baseline != null) {
             final difference = (sample.rssi - _baseline!).abs();
             _motionScore = min(1, difference / 10);
           }
+          if (_isRecording) {
+            _recordedSamples = _recorder.sampleCount;
+          }
         });
       },
       onError: (Object error) {
+        if (!mounted) return;
         setState(() => _error = error.toString());
       },
     );
@@ -76,6 +98,50 @@ class _MotionDashboardState extends State<MotionDashboard> {
       _baseline = average;
       _motionScore = 0;
     });
+  }
+
+  Future<void> _toggleRecording() async {
+    if (_isRecording) {
+      final summary = await _recorder.stop();
+      if (!mounted) return;
+      setState(() {
+        _isRecording = false;
+        _recordedSamples = summary?.sampleCount ?? 0;
+        _lastSavedPath = summary?.path;
+      });
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            summary == null
+                ? 'Recording stopped.'
+                : 'Saved ${summary.sampleCount} samples for ${summary.label}.',
+          ),
+        ),
+      );
+      return;
+    }
+
+    if (_latest == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Wait for Wi-Fi data before recording.')),
+      );
+      return;
+    }
+
+    try {
+      final path = await _recorder.start(_selectedLabel);
+      if (!mounted) return;
+      setState(() {
+        _isRecording = true;
+        _recordedSamples = 0;
+        _lastSavedPath = path;
+      });
+    } catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Could not start recording: $error')),
+      );
+    }
   }
 
   @override
@@ -203,14 +269,75 @@ class _MotionDashboardState extends State<MotionDashboard> {
                 ),
               ),
             ),
+            const SizedBox(height: 12),
+            Card(
+              child: Padding(
+                padding: const EdgeInsets.all(16),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text('Experiment recorder', style: Theme.of(context).textTheme.titleLarge),
+                    const SizedBox(height: 8),
+                    const Text('Choose what is happening in the room, then record a labelled dataset.'),
+                    const SizedBox(height: 16),
+                    DropdownButtonFormField<String>(
+                      initialValue: _selectedLabel,
+                      decoration: const InputDecoration(
+                        labelText: 'Experiment label',
+                        border: OutlineInputBorder(),
+                      ),
+                      items: labels
+                          .map((label) => DropdownMenuItem(value: label, child: Text(label)))
+                          .toList(),
+                      onChanged: _isRecording
+                          ? null
+                          : (value) {
+                              if (value != null) setState(() => _selectedLabel = value);
+                            },
+                    ),
+                    const SizedBox(height: 12),
+                    Row(
+                      children: [
+                        Expanded(
+                          child: Text(
+                            _isRecording
+                                ? 'Recording $_selectedLabel • $_recordedSamples samples'
+                                : 'Recorder ready',
+                          ),
+                        ),
+                        if (_isRecording)
+                          const Padding(
+                            padding: EdgeInsets.only(left: 8),
+                            child: Icon(Icons.fiber_manual_record, color: Colors.redAccent),
+                          ),
+                      ],
+                    ),
+                    const SizedBox(height: 12),
+                    SizedBox(
+                      width: double.infinity,
+                      child: FilledButton.icon(
+                        onPressed: connected ? _toggleRecording : null,
+                        icon: Icon(_isRecording ? Icons.stop : Icons.fiber_manual_record),
+                        label: Text(_isRecording ? 'Stop & Save Dataset' : 'Start Recording'),
+                      ),
+                    ),
+                    if (_lastSavedPath != null) ...[
+                      const SizedBox(height: 12),
+                      Text(
+                        'Saved locally as CSV:\n$_lastSavedPath',
+                        style: Theme.of(context).textTheme.bodySmall,
+                      ),
+                    ],
+                  ],
+                ),
+              ),
+            ),
             if (_error != null) ...[
               const SizedBox(height: 12),
               Card(
                 child: Padding(
                   padding: const EdgeInsets.all(16),
-                  child: Text(
-                    'Android Wi-Fi bridge error: $_error\n\nGenerate the Flutter Android platform files and add the Kotlin MethodChannel implementation from docs/android-wifi-bridge.md.',
-                  ),
+                  child: Text('Android Wi-Fi bridge error: $_error'),
                 ),
               ),
             ],
@@ -222,7 +349,7 @@ class _MotionDashboardState extends State<MotionDashboard> {
             ),
             const SizedBox(height: 12),
             const Text(
-              'People count is intentionally not shown yet. It will be added only after labelled real-room data proves that the available Wi-Fi measurements can support a useful estimate.',
+              'Recommended first dataset: record at least 2–5 minutes for each label while keeping the phone and router fixed. Human-count estimation will be added only after we evaluate the recorded data.',
               textAlign: TextAlign.center,
             ),
           ],
