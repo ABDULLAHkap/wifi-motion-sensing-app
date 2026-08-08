@@ -5,7 +5,6 @@ import android.content.Context
 import android.content.pm.PackageManager
 import android.net.wifi.WifiManager
 import android.os.Build
-import androidx.core.app.ActivityCompat
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
@@ -55,17 +54,12 @@ class MainActivity : FlutterActivity() {
     }
 
     private fun hasRequiredWifiPermission(): Boolean {
-        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            ActivityCompat.checkSelfPermission(
-                this,
-                Manifest.permission.NEARBY_WIFI_DEVICES
-            ) == PackageManager.PERMISSION_GRANTED
+        val permission = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            Manifest.permission.NEARBY_WIFI_DEVICES
         } else {
-            ActivityCompat.checkSelfPermission(
-                this,
-                Manifest.permission.ACCESS_FINE_LOCATION
-            ) == PackageManager.PERMISSION_GRANTED
+            Manifest.permission.ACCESS_FINE_LOCATION
         }
+        return checkSelfPermission(permission) == PackageManager.PERMISSION_GRANTED
     }
 
     private fun requestRequiredWifiPermission() {
@@ -74,11 +68,6 @@ class MainActivity : FlutterActivity() {
         } else {
             Manifest.permission.ACCESS_FINE_LOCATION
         }
-
-        ActivityCompat.requestPermissions(
-            this,
-            arrayOf(permission),
-            permissionRequestCode
-        )
+        requestPermissions(arrayOf(permission), permissionRequestCode)
     }
 }
