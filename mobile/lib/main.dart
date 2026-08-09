@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 
 import 'models/wifi_sample.dart';
 import 'services/dataset_recorder.dart';
+import 'services/signal_analyzer.dart';
 import 'services/wifi_service.dart';
 
 void main() => runApp(const WifiMotionApp());
@@ -44,12 +45,11 @@ class _MotionDashboardState extends State<MotionDashboard> {
 
   final WifiService _wifiService = WifiService();
   final DatasetRecorder _recorder = DatasetRecorder();
+  final SignalAnalyzer _analyzer = SignalAnalyzer(windowSize: 20);
   final List<int> _history = <int>[];
 
   StreamSubscription<WifiSample>? _subscription;
   WifiSample? _latest;
-  double? _baseline;
-  double _motionScore = 0;
   String? _error;
   String _selectedLabel = labels.first;
   bool _isRecording = false;
@@ -65,6 +65,7 @@ class _MotionDashboardState extends State<MotionDashboard> {
   void _startSensing() {
     _subscription = _wifiService.samples().listen(
       (sample) async {
+        _analyzer.add(sample.rssi);
         if (_isRecording) {
           await _recorder.append(sample);
         }
@@ -75,13 +76,7 @@ class _MotionDashboardState extends State<MotionDashboard> {
           _error = null;
           _history.add(sample.rssi);
           if (_history.length > 60) _history.removeAt(0);
-          if (_baseline != null) {
-            final difference = (sample.rssi - _baseline!).abs();
-            _motionScore = min(1, difference / 10);
-          }
-          if (_isRecording) {
-            _recordedSamples = _recorder.sampleCount;
-          }
+          if (_isRecording) _recordedSamples = _recorder.sampleCount;
         });
       },
       onError: (Object error) {
@@ -92,12 +87,20 @@ class _MotionDashboardState extends State<MotionDashboard> {
   }
 
   void _calibrate() {
-    if (_history.isEmpty) return;
-    final average = _history.reduce((a, b) => a + b) / _history.length;
-    setState(() {
-      _baseline = average;
-      _motionScore = 0;
-    });
+    if (!_analyzer.hasEnoughSamples) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Keep the room stable and wait for at least 10 Wi-Fi samples.')),
+      );
+      return;
+    }
+    setState(_analyzer.calibrate);
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(
+          'Calibrated: mean ${_analyzer.baselineMean!.toStringAsFixed(1)} dBm, noise ${_analyzer.baselineStd!.toStringAsFixed(2)} dB.',
+        ),
+      ),
+    );
   }
 
   Future<void> _toggleRecording() async {
@@ -153,8 +156,9 @@ class _MotionDashboardState extends State<MotionDashboard> {
   @override
   Widget build(BuildContext context) {
     final connected = _latest != null;
-    final calibrated = _baseline != null;
-    final moving = calibrated && _motionScore >= 0.3;
+    final calibrated = _analyzer.isCalibrated;
+    final motionScore = _analyzer.motionScore;
+    final moving = _analyzer.motionDetected;
 
     return Scaffold(
       appBar: AppBar(
@@ -178,10 +182,7 @@ class _MotionDashboardState extends State<MotionDashboard> {
                 padding: const EdgeInsets.all(24),
                 child: Column(
                   children: [
-                    Icon(
-                      moving ? Icons.directions_run : Icons.sensors,
-                      size: 76,
-                    ),
+                    Icon(moving ? Icons.directions_run : Icons.sensors, size: 76),
                     const SizedBox(height: 12),
                     Text(
                       !connected
@@ -197,8 +198,8 @@ class _MotionDashboardState extends State<MotionDashboard> {
                     const SizedBox(height: 8),
                     Text(
                       calibrated
-                          ? 'Motion confidence ${(100 * _motionScore).round()}%'
-                          : 'Collect samples, keep the phone fixed, then calibrate the room.',
+                          ? 'Adaptive motion score ${(100 * motionScore).round()}%'
+                          : 'Keep the phone and router fixed, let the room settle, then calibrate.',
                       textAlign: TextAlign.center,
                     ),
                   ],
@@ -219,7 +220,7 @@ class _MotionDashboardState extends State<MotionDashboard> {
                 Expanded(
                   child: _MetricCard(
                     label: 'Motion',
-                    value: '${(_motionScore * 100).round()}%',
+                    value: '${(motionScore * 100).round()}%',
                     icon: Icons.motion_photos_on,
                   ),
                 ),
@@ -231,9 +232,7 @@ class _MotionDashboardState extends State<MotionDashboard> {
                 Expanded(
                   child: _MetricCard(
                     label: 'Frequency',
-                    value: _latest?.frequencyMhz == null
-                        ? '--'
-                        : '${_latest!.frequencyMhz} MHz',
+                    value: _latest?.frequencyMhz == null ? '--' : '${_latest!.frequencyMhz} MHz',
                     icon: Icons.cell_tower,
                   ),
                 ),
@@ -241,9 +240,7 @@ class _MotionDashboardState extends State<MotionDashboard> {
                 Expanded(
                   child: _MetricCard(
                     label: 'Link speed',
-                    value: _latest?.linkSpeedMbps == null
-                        ? '--'
-                        : '${_latest!.linkSpeedMbps} Mbps',
+                    value: _latest?.linkSpeedMbps == null ? '--' : '${_latest!.linkSpeedMbps} Mbps',
                     icon: Icons.speed,
                   ),
                 ),
@@ -256,10 +253,30 @@ class _MotionDashboardState extends State<MotionDashboard> {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
+                    Text('Live signal analysis', style: Theme.of(context).textTheme.titleLarge),
+                    const SizedBox(height: 10),
+                    Text('Rolling mean: ${_analyzer.currentMean.toStringAsFixed(2)} dBm'),
+                    Text('Rolling standard deviation: ${_analyzer.currentStd.toStringAsFixed(2)} dB'),
+                    Text('Mean absolute change: ${_analyzer.meanAbsoluteChange.toStringAsFixed(2)} dB/sample'),
+                    if (calibrated) ...[
+                      Text('Baseline mean: ${_analyzer.baselineMean!.toStringAsFixed(2)} dBm'),
+                      Text('Baseline noise: ${_analyzer.baselineStd!.toStringAsFixed(2)} dB'),
+                    ],
+                  ],
+                ),
+              ),
+            ),
+            const SizedBox(height: 12),
+            Card(
+              child: Padding(
+                padding: const EdgeInsets.all(16),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
                     Text('Signal history', style: Theme.of(context).textTheme.titleMedium),
                     const SizedBox(height: 12),
                     SizedBox(
-                      height: 90,
+                      height: 100,
                       child: CustomPaint(
                         painter: _SignalPainter(_history),
                         child: const SizedBox.expand(),
@@ -323,10 +340,7 @@ class _MotionDashboardState extends State<MotionDashboard> {
                     ),
                     if (_lastSavedPath != null) ...[
                       const SizedBox(height: 12),
-                      Text(
-                        'Saved locally as CSV:\n$_lastSavedPath',
-                        style: Theme.of(context).textTheme.bodySmall,
-                      ),
+                      Text('Saved locally as CSV:\n$_lastSavedPath', style: Theme.of(context).textTheme.bodySmall),
                     ],
                   ],
                 ),
@@ -343,13 +357,13 @@ class _MotionDashboardState extends State<MotionDashboard> {
             ],
             const SizedBox(height: 20),
             FilledButton.icon(
-              onPressed: _history.isEmpty ? null : _calibrate,
+              onPressed: _analyzer.hasEnoughSamples ? _calibrate : null,
               icon: const Icon(Icons.tune),
               label: const Text('Calibrate Room'),
             ),
             const SizedBox(height: 12),
             const Text(
-              'Recommended first dataset: record at least 2–5 minutes for each label while keeping the phone and router fixed. Human-count estimation will be added only after we evaluate the recorded data.',
+              'The live detector now uses rolling mean, standard deviation and rate of change instead of one RSSI difference. The ML model will be trained after enough labelled CSV recordings are collected.',
               textAlign: TextAlign.center,
             ),
           ],
