@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Wi-Fi Motion Sensing Dashboard</title>
+  <style>
+    :root { font-family: Inter, system-ui, sans-serif; color-scheme: dark; }
+    body { margin:0; background:#07111f; color:#e8f3ff; }
+    main { max-width:1100px; margin:auto; padding:28px; }
+    h1 { margin-bottom:4px; } .muted { color:#8fa8c1; }
+    .grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(210px,1fr)); gap:14px; margin:22px 0; }
+    .card { background:#101d2e; border:1px solid #203653; border-radius:16px; padding:18px; }
+    .value { font-size:30px; font-weight:750; margin-top:8px; }
+    .online { color:#4ade80; } .offline { color:#fb923c; }
+    canvas { width:100%; height:260px; background:#0b1727; border-radius:12px; }
+    input,button { background:#13253a; color:#fff; border:1px solid #31506f; border-radius:9px; padding:10px 12px; }
+    button { cursor:pointer; }
+  </style>
+</head>
+<body>
+<main>
+  <h1>Wi-Fi Motion Sensing</h1>
+  <p class="muted">Desktop browser dashboard. The Android phone remains the room sensor.</p>
+  <div class="card">
+    <label>Backend URL <input id="api" size="38" value="http://localhost:8000" /></label>
+    <label>Room <input id="room" value="default-room" /></label>
+    <button onclick="refresh()">Connect</button>
+    <span id="status" class="offline">● waiting</span>
+  </div>
+  <section class="grid">
+    <div class="card">RSSI<div class="value" id="rssi">--</div></div>
+    <div class="card">Frequency<div class="value" id="freq">--</div></div>
+    <div class="card">Link speed<div class="value" id="speed">--</div></div>
+    <div class="card">Motion<div class="value" id="motion">--</div></div>
+  </section>
+  <div class="card">
+    <h2>Live RSSI history</h2>
+    <canvas id="chart" width="1000" height="260"></canvas>
+  </div>
+</main>
+<script>
+const $ = id => document.getElementById(id);
+function endpoint(path) { return $('api').value.replace(/\/$/, '') + path; }
+function draw(samples) {
+  const c=$('chart'), x=c.getContext('2d'); x.clearRect(0,0,c.width,c.height);
+  if(samples.length<2) return;
+  const vals=samples.map(s=>s.rssi), min=Math.min(...vals)-2, max=Math.max(...vals)+2;
+  x.strokeStyle='#22d3ee'; x.lineWidth=3; x.beginPath();
+  vals.forEach((v,i)=>{ const px=i*(c.width/(vals.length-1)); const py=c.height-(v-min)/(max-min)*c.height; i?x.lineTo(px,py):x.moveTo(px,py); });
+  x.stroke();
+}
+async function refresh(){
+  const room=encodeURIComponent($('room').value);
+  try {
+    const [latestR,historyR]=await Promise.all([
+      fetch(endpoint(`/rooms/${room}/latest`)), fetch(endpoint(`/rooms/${room}/history?limit=120`))
+    ]);
+    if(!latestR.ok||!historyR.ok) throw new Error('API error');
+    const latest=(await latestR.json()).sample; const history=(await historyR.json()).samples;
+    if(latest){
+      $('rssi').textContent=`${latest.rssi} dBm`; $('freq').textContent=latest.frequency_mhz?`${latest.frequency_mhz} MHz`:'--';
+      $('speed').textContent=latest.link_speed_mbps?`${latest.link_speed_mbps} Mbps`:'--';
+      $('motion').textContent=latest.motion_state || (latest.motion_score==null?'--':`${Math.round(latest.motion_score*100)}%`);
+    }
+    draw(history); $('status').textContent='● sensor data connected'; $('status').className='online';
+  } catch(e){ $('status').textContent='● backend unavailable'; $('status').className='offline'; }
+}
+setInterval(refresh,2000);
+</script>
+</body>
+</html>
