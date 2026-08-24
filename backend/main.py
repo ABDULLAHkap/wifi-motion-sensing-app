@@ -4,12 +4,13 @@ from fastapi import FastAPI, Query
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
+from motion_analysis import analyze_motion
 from storage import init_db, insert_sample, latest_sample, recent_samples
 
 app = FastAPI(
     title="Wi-Fi Motion Sensing API",
-    version="0.2.0",
-    description="Backend for Wi-Fi sensing samples, room history and live dashboards.",
+    version="0.3.0",
+    description="Backend for Wi-Fi sensing samples, room history and live motion analysis.",
 )
 
 app.add_middleware(
@@ -42,8 +43,8 @@ def root():
     return {
         "project": "wifi-motion-sensing-app",
         "status": "running",
-        "phase": "live-backend-foundation",
-        "api_version": "0.2.0",
+        "phase": "live-motion-analysis",
+        "api_version": "0.3.0",
     }
 
 
@@ -69,3 +70,10 @@ def get_latest(room_id: str):
 def get_history(room_id: str, limit: int = Query(default=120, ge=1, le=1000)):
     samples = recent_samples(room_id, limit)
     return {"room_id": room_id, "count": len(samples), "samples": samples}
+
+
+@app.get("/rooms/{room_id}/motion")
+def get_motion(room_id: str, window: int = Query(default=30, ge=5, le=240)):
+    samples = recent_samples(room_id, window)
+    analysis = analyze_motion(samples)
+    return {"room_id": room_id, "window": window, **analysis}
