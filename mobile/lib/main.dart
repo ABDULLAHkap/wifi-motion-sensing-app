@@ -278,7 +278,7 @@ class _MotionDashboardState extends State<MotionDashboard> {
                     SizedBox(
                       height: 100,
                       child: CustomPaint(
-                        painter: _SignalPainter(_history),
+                        painter: _SignalPainter(List<int>.of(_history)),
                         child: const SizedBox.expand(),
                       ),
                     ),
