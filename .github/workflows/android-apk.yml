@@ -39,15 +39,23 @@ jobs:
           flutter --version
           java -version
 
-      - name: Complete missing Android platform files
+      - name: Complete missing Gradle wrapper safely
         working-directory: mobile
         shell: bash
         run: |
           if [ ! -f android/gradlew ]; then
-            echo "Android Gradle wrapper is missing; completing the existing Android platform."
-            flutter create --platforms=android --org com.example .
+            echo "Gradle wrapper missing; generating a temporary Flutter Android scaffold."
+            temp_root="$(mktemp -d)"
+            flutter create --platforms=android --org com.example "$temp_root/scaffold"
+            cp "$temp_root/scaffold/android/gradlew" android/gradlew
+            cp "$temp_root/scaffold/android/gradlew.bat" android/gradlew.bat
+            mkdir -p android/gradle
+            cp -R "$temp_root/scaffold/android/gradle/wrapper" android/gradle/
+            rm -rf "$temp_root"
           fi
           test -f android/gradlew
+          test -f android/gradle/wrapper/gradle-wrapper.properties
+          test -f android/gradle/wrapper/gradle-wrapper.jar
           chmod +x android/gradlew
 
       - name: Get Flutter packages
