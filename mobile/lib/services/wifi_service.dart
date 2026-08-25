@@ -17,7 +17,14 @@ class WifiService {
 
   Stream<WifiSample> samples({Duration interval = const Duration(seconds: 1)}) async* {
     while (true) {
-      yield await readSample();
+      try {
+        yield await readSample();
+      } catch (error, stackTrace) {
+        // Report the error to the UI but keep the sensing loop alive. This lets
+        // the app recover automatically after temporary Wi-Fi/permission issues.
+        yield* Stream<WifiSample>.error(error, stackTrace);
+      }
+
       await Future<void>.delayed(interval);
     }
   }
