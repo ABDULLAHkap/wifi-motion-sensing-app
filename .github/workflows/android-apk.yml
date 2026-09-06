@@ -74,8 +74,26 @@ jobs:
         run: flutter test
 
       - name: Build debug APK
+        id: apkbuild
         working-directory: mobile
-        run: flutter build apk --debug --verbose
+        shell: bash
+        run: |
+          set +e
+          flutter build apk --debug --verbose 2>&1 | tee ../android-build.log
+          status=${PIPESTATUS[0]}
+          tail -n 250 ../android-build.log > ../android-build-tail.log
+          exit $status
+
+      - name: Upload build diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-build-diagnostics
+          path: |
+            android-build.log
+            android-build-tail.log
+          if-no-files-found: warn
+          retention-days: 7
 
       - name: Verify APK exists
         run: test -s mobile/build/app/outputs/flutter-apk/app-debug.apk
